@@ -18,8 +18,11 @@ that produces worse results than simply setting
 `--chat-template-kwargs '{"reasoning_effort": "medium"}'` and letting the model
 stop on its own.
 
-**Verdict so far: not supported on this model.** Accuracy is identical; `medium`
-costs 39% more tokens and is the only setting that fails to answer at all.
+**Verdict: not supported on this model.** Across 176 graded responses the hard
+cutoff never once cost an answer that `medium` got right. In the adversarial
+round -- built specifically to make truncation fatal and to favour `medium` --
+`medium` alone was the *worst* arm on both accuracy and cost, and the cutoff
+**rescued** two answers it had lost. Keep `--reasoning-budget 8192`.
 
 ---
 
@@ -138,61 +141,104 @@ methods, so treat it as corroboration rather than a rate.)
 
 ---
 
-## 4. Round 3 — adversarial (in progress)
+## 4. Round 3 — adversarial (COMPLETE, 48 responses)
 
-Rounds 1-2 have a real weakness: the cutoff fired on only 4 of 14 runs. Round 3
-is built to **force the guillotine** and to **stack the deck for `medium`**, so
-the claim gets its best shot.
+Rounds 1-2 had a real weakness: the cutoff fired on only 4 of 14 runs. Round 3
+was built to **force the guillotine** and to **stack the deck for `medium`**, so
+the claim got its best possible shot.
 
 **Tasks chosen to favour `medium`.** Category A is long *mechanical* execution
 (Collatz from 27 = 111 steps; a 30-step modular recurrence; summing d(n) over
 100 integers). There are no alternatives to weigh and no assumptions to
 validate, so `xhigh`'s instruction is pure overhead while `medium` just executes.
 And these have **no partial credit** — the answer exists only at the end of the
-chain, so truncating at step 70 of 111 destroys it. Maximum guillotine damage
-where `xhigh` is maximally wasteful. Category B forces the cutoff by brute size
-(counts in the millions).
+chain, so truncating at step 70 of 111 should destroy it. Maximum guillotine
+damage where `xhigh` is maximally wasteful. Category B forces the cutoff by
+brute size (counts in the millions).
 
-**A uniform `SHOW_WORK` instruction** is appended identically to every arm on
-category A, purely to push both arms past the 8192 boundary so the cutoff is
-under test rather than inert.
+A uniform `SHOW_WORK` instruction is appended identically to every arm on
+category A, purely to push both arms past the 8192 boundary. It cannot bias the
+comparison; it only makes the cutoff testable rather than inert.
 
-**Three arms, so the cutoff is finally isolated:**
+**It worked: the guillotine fired in 11 of 16 cells** (vs 4 of 14 in round 2).
 
-| arm | effort | budget | |
+| | A: xhigh+8192 | B: medium+unlim | D: medium+8192 |
 |---|---|---|---|
-| A | xhigh | 8192 | status quo |
-| B | medium | unlimited | the Reddit proposal |
-| D | medium | 8192 | medium **with** the cutoff |
+| accuracy | **14/16** | 11/16 | 13/16 |
+| guillotine fired | 11/16 | 0/16 | 5/16 |
+| no answer produced | 0/16 | **4/16** | 0/16 |
+| total completion tokens | 128,985 | 153,875 | **105,890** |
 
-`B vs D` isolates the guillotine at constant effort — the direct test of whether
-truncation itself hurts, which **no result in rounds 1-2 can answer**, since A
-and B differ in both factors. `A vs D` isolates the effort prompt at constant
-budget.
+**The Reddit proposal (B) is the worst arm on both axes** — lowest accuracy and
+highest cost. `A vs B` is **3-0** for the status quo.
+
+### The isolation: B vs D (same effort, only the cutoff differs)
+
+This is what round 3 was for. `A vs B` confounds effort with budget; `B vs D`
+holds effort at `medium` and varies only the cutoff.
+
+```
+cutoff rescued an answer B lost : 2
+cutoff broke  an answer B got   : 0
+removing the cutoff costs       : +45% tokens
+```
+
+Attribution matters here. The raw tally is D-wins 3, B-wins 1 — but in two of
+those cells the guillotine never fired, so it can be neither credited nor
+blamed. Restricting to cells where truncation **actually happened**, the cutoff
+rescued 2 and broke 0. Both rescues are the same mechanism: `B` burned the
+entire 16,384-token ceiling and returned nothing, while `D` was truncated at
+8192, forced to answer, and got it right.
+
+`h2_perms` is the clearest illustration — in **both** seeds `B` produced no
+answer at all, while the truncated arms at least terminated.
+
+### What `medium` is actually good for
+
+On the mechanical-grind tasks `medium` *is* leaner, as predicted: `a4_nonconsec`
+seed 22 cost 2,790 tokens under `D` versus 9,453 under `A`. `D` (medium + the
+cutoff) is the cheapest arm overall at 105,890 tokens — 18% below `A`. So if
+token cost dominates, `medium + 8192` is defensible. It is still one answer
+behind `xhigh`, and it is `medium` **with** the cutoff, not instead of it.
 
 ---
 
-## 5. Honest limitations
+## 5. Recommendation
 
-- **Small n on the decisive subset.** 4 of 14 runs. Round 3 targets exactly this.
-- **A vs B is confounded by design.** The two arms differ in effort *and* budget,
-  so rounds 1-2 cannot attribute a difference to the cutoff alone. Correct for a
-  deployment choice, wrong for isolating a mechanism. Arm D fixes it.
+**Keep `--reasoning-budget 8192`.** Dropping it for `reasoning_effort=medium`
+would cost accuracy, add ~45% tokens, and reintroduce runaway non-answers.
+
+If you want `medium`'s conciseness, run `medium` **and** the cutoff together
+(arm D) — the cheapest configuration measured — but expect a small accuracy
+cost versus the `xhigh` default.
+
+---
+
+## 6. Honest limitations
+
+- **Still small n.** 176 graded responses total, but only 11 cells where the
+  guillotine fired and only 2 attributable rescues. The direction is consistent
+  across three independent rounds; the effect size is not precisely pinned.
+- **A vs B is confounded by design** (effort *and* budget both vary). That is
+  correct for a deployment choice, wrong for a mechanism claim -- which is why
+  arm D exists, and why the headline isolation is B vs D.
 - **One model, one quant, one task family.** Combinatorics with integer answers.
   Nothing here transfers automatically to coding or agentic tool use.
 - **Throughput is bandwidth-bound.** ~15 tok/s aggregate regardless of
   concurrency, so wall-clock latency under 4-way batching is inflated. Token
   counts are the load-independent cost metric and are used throughout.
-- **`medium` was never given the cutoff in rounds 1-2**, which is arguably its
-  best configuration. Arm D tests it.
+- **Arm C (`xhigh` + unlimited) was never run at scale.** It is the most
+  expensive cell and tends to burn the ceiling without answering; the one probe
+  of it spent 20,000 tokens and never answered.
 
-## 6. Reproducing
+## 7. Reproducing
 
 ```bash
 python3 ground_truths.py          # re-verify all 18 answers from scratch (18/18)
 python3 scripts/run3h.py          # rounds 1-2 head-to-head
 SEED=11 python3 scripts/round3.py # adversarial round
-python3 scripts/final.py          # analysis
+python3 scripts/final.py            # rounds 1-2 analysis
+python3 scripts/round3_analysis.py  # round 3, three-arm isolation
 ```
 
 Every benchmark answer is brute-forced in `ground_truths.py` rather than taken
